@@ -116,3 +116,45 @@ def test_total_content_counter_includes_prefetched_logs():
             }
         )
     assert "exceeds limit" in str(excinfo.value)
+
+
+def test_available_fact_retrievers_accepts_camel_case_alias():
+    """Frontend sends availableFactRetrievers/selectedFactIds (camelCase);
+    the agent stores them as snake_case. Round-trip through the alias is
+    the contract the check_authoring prompt branch depends on."""
+    scope = ChatScope.model_validate(
+        {
+            "caseType": "check_authoring",
+            "availableFactRetrievers": [
+                {
+                    "id": "githubRepoMetadataFactRetriever",
+                    "facts": [
+                        {
+                            "name": "githubIsArchived",
+                            "type": "boolean",
+                            "description": "repo is archived",
+                        }
+                    ],
+                },
+            ],
+            "selectedFactIds": ["githubRepoMetadataFactRetriever"],
+        }
+    )
+    assert scope.available_fact_retrievers[0].id == "githubRepoMetadataFactRetriever"
+    assert scope.selected_fact_ids == ["githubRepoMetadataFactRetriever"]
+
+
+def test_total_content_counter_includes_nested_fact_retrievers():
+    """available_fact_retrievers nests two levels deep (retriever -> facts
+    -> description) — the recursive walker must reach that, or oversized
+    content here is invisible to the 60k budget check."""
+    one_fact = {"name": "f", "type": "boolean", "description": "x" * 512}
+    retriever = {"id": "r", "facts": [one_fact] * 100}
+    with pytest.raises(ValidationError) as excinfo:
+        ChatRequest.model_validate(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "scope": {"availableFactRetrievers": [retriever, retriever]},
+            }
+        )
+    assert "exceeds limit" in str(excinfo.value)

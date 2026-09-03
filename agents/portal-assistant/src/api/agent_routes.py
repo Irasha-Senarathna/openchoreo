@@ -5,7 +5,7 @@ import asyncio
 import hashlib
 import logging
 import re
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -96,6 +96,36 @@ class PendingDependency(BaseModel):
     component: str = Field(max_length=253)
     endpoint: str | None = Field(default=None, max_length=253)
     reason: str | None = Field(default=None, max_length=512)
+
+
+class FactRetrieverField(BaseModel):
+    """One fact exposed by a registered fact retriever.
+
+    Mirrors the shape the host tech-insights plugin's ``/fact-schemas``
+    endpoint returns per fact, trimmed to what the check_authoring prompt
+    branch actually renders.
+    """
+
+    model_config = {"populate_by_name": True, "extra": "ignore"}
+
+    name: str = Field(max_length=253)
+    type: str = Field(max_length=64)
+    description: str | None = Field(default=None, max_length=512)
+
+
+class FactRetriever(BaseModel):
+    """One registered fact retriever and the facts it exposes.
+
+    Forwarded on ``check_authoring`` chats so the agent drafts checks
+    against facts that actually exist on this backend instead of
+    hallucinating retriever/fact names — see the "Available facts" table
+    in perch_prompt.j2's CHECK AUTHORING block.
+    """
+
+    model_config = {"populate_by_name": True, "extra": "ignore"}
+
+    id: str = Field(max_length=253)
+    facts: list[FactRetrieverField] = Field(default_factory=list, max_length=100)
 
 
 class ChatScope(BaseModel):
@@ -207,6 +237,22 @@ class ChatScope(BaseModel):
         default=None, alias="pendingDependencies", max_length=50,
     )
 
+    # ── Check-authoring scope fields ───────────────────────────────
+    # Set by the check-editor's "Ask Portal Assistant" launcher. The
+    # check_authoring prompt branch renders these as the live
+    # "Available facts" table so the agent only references facts that
+    # actually exist on this backend, instead of a fixed example set.
+    available_fact_retrievers: list[FactRetriever] | None = Field(
+        default=None, alias="availableFactRetrievers", max_length=50,
+    )
+    # factIds already picked in the check-editor form for this specific
+    # check. The prompt branch treats these as a preference, not a hard
+    # restriction — the agent may still reach for a different retriever
+    # when the request needs a fact none of the selected ones provide.
+    selected_fact_ids: list[str] | None = Field(
+        default=None, alias="selectedFactIds", max_length=50,
+    )
+
     @field_validator("repo_url")
     @classmethod
     def _validate_repo_url(cls, v: str | None) -> str | None:
@@ -241,6 +287,23 @@ class ChatScope(BaseModel):
 _TOTAL_CONTENT_LIMIT = 60_000
 
 
+def _sum_string_lengths(value: Any) -> int:
+    """Recursively sum the length of every string reachable from ``value``.
+
+    Walks dicts/lists/tuples of arbitrary depth so a ChatScope field with
+    nested structured sub-objects (e.g. ``available_fact_retrievers``,
+    whose ``facts`` is itself a list of dicts) is covered by the
+    per-request content budget without a bespoke branch per shape.
+    """
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, dict):
+        return sum(_sum_string_lengths(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_sum_string_lengths(v) for v in value)
+    return 0
+
+
 class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1, max_length=50)
     scope: ChatScope | None = None
@@ -249,23 +312,7 @@ class ChatRequest(BaseModel):
     def _validate_total_content(self) -> "ChatRequest":
         total = sum(len(m.content) for m in self.messages)
         if self.scope is not None:
-            for v in self.scope.model_dump(exclude_none=True).values():
-                if isinstance(v, str):
-                    total += len(v)
-                elif isinstance(v, (list, tuple)):
-                    for item in v:
-                        if isinstance(item, str):
-                            total += len(item)
-                        elif isinstance(item, dict):
-                            # Lists of structured items (e.g. prefetched_logs
-                            # rendered via model_dump). Count every string
-                            # value so the per-request budget enforcement
-                            # covers them too.
-                            total += sum(
-                                len(field_value)
-                                for field_value in item.values()
-                                if isinstance(field_value, str)
-                            )
+            total += _sum_string_lengths(self.scope.model_dump(exclude_none=True))
         if total > _TOTAL_CONTENT_LIMIT:
             raise ValueError(
                 f"request total content {total} chars exceeds limit "

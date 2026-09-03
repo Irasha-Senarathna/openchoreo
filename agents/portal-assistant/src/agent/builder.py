@@ -78,6 +78,11 @@ _RECURSION_LIMIT_FOR_CASE: dict[str, int] = {
     "build_failure": 15,
     "runtime_debug": 20,
     "dependency_pending": 20,
+    # check_authoring makes no tool calls at all (empty allowlist in
+    # _TOOLS_FOR_CASE below), so this is a pure safety ceiling for an
+    # unexpected loop, not a working budget. 10 matches the cap agreed
+    # on the whiteboard.
+    "check_authoring": 10,
 }
 
 
@@ -175,6 +180,11 @@ _TOOLS_FOR_CASE: dict[str, set[str]] = {
         "get_resource_events",
         "get_resource_logs",
     },
+    # check_authoring is pure text generation from scope data (the fact
+    # retriever list arrives via ChatScope, not a tool call) — no
+    # OpenChoreo MCP tool is needed, so the allowlist is empty rather
+    # than falling through to the full ~100-tool catalog.
+    "check_authoring": set(),
 }
 
 
