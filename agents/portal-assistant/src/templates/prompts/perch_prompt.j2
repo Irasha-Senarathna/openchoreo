@@ -494,13 +494,13 @@ Opened from the Tech Insights check editor. The user describes, in plain languag
 
 ### Grammar
 
-A check's `rule.conditions` is a JSON object, following these rules exactly:
+A check's condition is a JSON object (the value of `rule.conditions`), following these rules exactly:
 - The root object contains exactly ONE of: `all` (AND, array of conditions), `any` (OR, array of conditions), `not`, or `condition`.
 - Each leaf condition is an object with exactly three keys: `fact` (string, must be one of the facts listed below), `operator` (e.g. `equal`, `notEqual`, `lessThan`, `greaterThan`, `contains`), `value` (type must match the fact's type).
 - `all`/`any` can nest inside each other for compound logic.
 - Never write a leaf condition at the root without wrapping it in `all`/`any`.
 
-A full check object also needs: `name` (string, required), `factIds` (array of strings, required — every fact retriever that owns a fact referenced in `rule.conditions` must be listed here), `description` (string, optional), `rule` (object, required, containing `conditions`).
+Alongside the condition, every check needs a `name` (short title) and a `description` (one sentence explaining what it checks) — see "Response format" below for how these are presented. Do NOT include `factIds` anywhere in your reply.
 
 ### Available facts
 
@@ -524,29 +524,35 @@ No fact retrievers were forwarded with this request. Tell the user to select at 
 ### Worked example
 
 User: "Make sure the repository isn't archived."
+
+Name: Repo not archived
+
+Description: Fails if the component's GitHub repository has been archived
+
+Rule (json-rules-engine conditions)
 ```json
 {
-  "name": "Repo not archived",
-  "description": "Fails if the component's GitHub repository has been archived",
-  "factIds": ["githubRepoMetadataFactRetriever"],
-  "rule": {
-    "conditions": {
-      "all": [
-        { "fact": "githubIsArchived", "operator": "equal", "value": false }
-      ]
-    }
+  "conditions": {
+    "all": [
+      { "fact": "githubIsArchived", "operator": "equal", "value": false }
+    ]
   }
 }
 ```
 
 ### Common mistakes to avoid
 - Never invent a fact name or retriever id — only use ones listed in "Available facts" above.
-- Every fact referenced in `rule.conditions` must have its owning retriever listed in `factIds`.
 - Plain JSON only — not Rego, YAML, Kyverno, or CEL.
 - `value`'s type must match the fact's type (don't compare a `boolean` fact to a string).
+- Do NOT include `factIds` or a `name`/`description` field inside the JSON block — the block is `{ "conditions": { ... } }` only.
 
 ### Response format
-One short sentence confirming what the check does, then the check as a fenced ```json code block exactly as it should be pasted into the Rule field. No "Here's your check:", no syntax lecture unless asked. One `ChatResponse` call; leave `fix_prompt` unset — this flow has no external-agent handoff.
+Reply with exactly three parts, in this order, as plain text labels (not markdown headers):
+1. `Name: <short check title>`
+2. `Description: <one sentence explaining what the check verifies>`
+3. `Rule (json-rules-engine conditions)` followed by a fenced ```json code block shaped exactly as `{ "conditions": { ... } }` — the top-level key is always `conditions`, holding the `all`/`any`/`not`/`condition` structure from the Grammar above. No `name`, `description`, or `factIds` inside this block.
+
+Leave one blank line between each part. No "Here's your check:", no syntax lecture unless asked. One `ChatResponse` call; leave `fix_prompt` unset — this flow has no external-agent handoff.
 
 {% endif -%}
 
