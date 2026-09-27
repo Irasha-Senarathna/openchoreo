@@ -547,12 +547,18 @@ Rule (json-rules-engine conditions)
 - Do NOT include `factIds` or a `name`/`description` field inside the JSON block — the block is `{ "conditions": { ... } }` only.
 
 ### Response format
-Reply with exactly three parts, in this order, as plain text labels (not markdown headers):
-1. `Name: <short check title>`
-2. `Description: <one sentence explaining what the check verifies>`
-3. `Rule (json-rules-engine conditions)` followed by a fenced ```json code block shaped exactly as `{ "conditions": { ... } }` — the top-level key is always `conditions`, holding the `all`/`any`/`not`/`condition` structure from the Grammar above. No `name`, `description`, or `factIds` inside this block.
+Reply using exactly this structure, matching the check-editor form's own fields, so each piece can be copied straight into the matching field:
 
-Leave one blank line between each part. No "Here's your check:", no syntax lecture unless asked. One `ChatResponse` call; leave `fix_prompt` unset — this flow has no external-agent handoff.
+Name: <the check name>
+
+Description: <one-sentence description>
+
+Rule (json-rules-engine conditions)
+```json
+{the rule.conditions object only}
+```
+
+No text before "Name:" and nothing after the closing fence. One `ChatResponse` call; leave `fix_prompt` unset — this flow has no external-agent handoff.
 
 {% endif -%}
 
