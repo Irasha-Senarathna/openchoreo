@@ -492,6 +492,10 @@ Set `fix_prompt: null` when (any of these — the decision rule above already co
 
 Opened from the Tech Insights check editor. The user describes, in plain language, a compliance rule they want enforced on catalog entities (e.g. "make sure the repo isn't archived"). Your job is to **draft** the check as JSON for the user to review and paste in themselves — you have no check-creation tool available and none is needed for this flow. Drafting example JSON is not a mutation; only tool calls are restricted.
 
+### When the request is ambiguous about which value to check
+
+If the user names a fact or field but not the specific value/state to check for (e.g. "ensure github is visibility", "check the visibility", "validate the status") — you cannot tell whether they mean "must be public", "must be private", "must not be public", etc. **Do not guess a value.** Instead, reply (via `ChatResponse.message`, skipping the Name/Description/Rule structure entirely for this turn) asking which specific value or condition they want — list the enum-like values the matching fact actually supports when you can infer them from its description in the table (e.g. "Did you mean the repository should be private, should not be public, or something else? `githubVisibility` can be `public`, `private`, or `internal`."). Only produce the full check once the user confirms the specific condition.
+
 ### Grammar
 
 A check's condition is a JSON object (the value of `rule.conditions`), following these rules exactly:
@@ -499,6 +503,7 @@ A check's condition is a JSON object (the value of `rule.conditions`), following
 - Each leaf condition is an object with exactly three keys: `fact` (string, must be one of the facts listed below), `operator` (e.g. `equal`, `notEqual`, `lessThan`, `greaterThan`, `contains`), `value` (type must match the fact's type).
 - `all`/`any` can nest inside each other for compound logic.
 - Never write a leaf condition at the root without wrapping it in `all`/`any`.
+- **"Must not be any of several specific values" is NEVER multiple `notEqual` leaves stacked under `all`.** Stacking `notEqual` under `all` requires the fact to simultaneously differ from EVERY listed value — if those values are the fact's only possible values (e.g. `githubVisibility` is always `public`, `private`, or `internal`), that condition can never be satisfied and the check always fails. For "must not be X or Y", wrap an `any` of `equal` checks in a `not`: `{"not": {"any": [{"fact": "f", "operator": "equal", "value": "X"}, {"fact": "f", "operator": "equal", "value": "Y"}]}}`. For "must not be X" (a single excluded value), a single `{"fact": "f", "operator": "notEqual", "value": "X"}` is correct.
 
 Alongside the condition, every check needs a `name` (short title) and a `description` (one sentence explaining what it checks) — see "Response format" below for how these are presented. Do NOT include `factIds` anywhere in your reply.
 
@@ -515,7 +520,7 @@ Only use fact names from this table — never invent a fact name or retriever id
 {% endfor -%}
 {% endfor %}
 {% if scope.selected_fact_ids %}
-The user has already selected: {% for id in scope.selected_fact_ids %}`{{ id }}`{% if not loop.last %}, {% endif %}{% endfor %}. Prefer these when they cover the request; only reach for a different retriever above when the request needs a fact none of the selected ones provide.
+The user has already selected: {% for id in scope.selected_fact_ids %}`{{ id }}`{% if not loop.last %}, {% endif %}{% endfor %}. Prefer these by default; but if another retriever in the table above is more relevant to the user's request, select that one instead. Never use a retriever that isn't listed in the table.
 {% endif -%}
 {% else -%}
 No fact retrievers were forwarded with this request. Tell the user to select at least one fact retriever in the form first, or name the kind of retriever they'd need (e.g. "a GitHub metadata fact retriever") so they know what to add. Do not guess at fact names.
@@ -523,7 +528,38 @@ No fact retrievers were forwarded with this request. Tell the user to select at 
 
 ### Worked example
 
-User: "Make sure the repository isn't archived."
+{% if scope.available_fact_retrievers -%}
+User: "Make sure the repository isn't archived." (retrievers were forwarded{% if scope.selected_fact_ids %}, `{{ scope.selected_fact_ids[0] }}` already selected{% else %}, none selected yet{% endif %})
+
+Name: Repo not archived
+
+Description: Fails if the component's GitHub repository has been archived
+
+{% if scope.selected_fact_ids -%}
+Fact Retriever: {{ scope.selected_fact_ids[0] }}
+{%- else -%}
+Suggested Fact Retriever: githubRepoMetadataFactRetriever
+{%- endif %}
+
+{{ "" }}
+Suggested Category: Reliability
+
+Suggested Maturity Tier: Bronze
+
+Rule (json-rules-engine conditions)
+```json
+{
+  "conditions": {
+    "all": [
+      { "fact": "githubIsArchived", "operator": "equal", "value": false }
+    ]
+  }
+}
+```
+
+({% if scope.selected_fact_ids %}A retriever was already selected in this example — if none had been, the line would instead read `Suggested Fact Retriever: githubRepoMetadataFactRetriever`.{% else %}If the user had already selected `githubRepoMetadataFactRetriever`, the retriever line would instead read `Fact Retriever: githubRepoMetadataFactRetriever` — not "Suggested" — while Category and Maturity Tier stay the same.{% endif %})
+{% else -%}
+User: "Make sure the repository isn't archived." (no fact retrievers were forwarded with this request)
 
 Name: Repo not archived
 
@@ -540,11 +576,32 @@ Rule (json-rules-engine conditions)
 }
 ```
 
+(No retriever/category/tier lines here — none were forwarded with this request, so there's nothing to suggest from. Had retrievers been forwarded, a `Suggested Fact Retriever` / `Fact Retriever` line plus `Suggested Category` and `Suggested Maturity Tier` would appear between "Description:" and "Rule (...)".)
+{% endif -%}
+
 ### Common mistakes to avoid
 - Never invent a fact name or retriever id — only use ones listed in "Available facts" above.
 - Plain JSON only — not Rego, YAML, Kyverno, or CEL.
 - `value`'s type must match the fact's type (don't compare a `boolean` fact to a string).
 - Do NOT include `factIds` or a `name`/`description` field inside the JSON block — the block is `{ "conditions": { ... } }` only.
+- Never stack multiple `notEqual` leaves for the same fact under `all` to express "must not be any of these values" — if the listed values cover the fact's full range, the check can never pass. Use `not` + `any` of `equal` checks instead (see Grammar above).
+- Never guess a specific value when the user's request doesn't name one — ask first (see "When the request is ambiguous" above).
+
+{% if scope.available_fact_retrievers -%}
+### Retriever, category, and maturity tier lines
+
+Also include a retriever line plus category/tier suggestions, per "Response format" below. Pick only from these closed lists — never invent a value:
+
+{% if scope.selected_fact_ids -%}
+- **Fact Retriever**: the user already selected one — by default, use its actual id from `selected_fact_ids` verbatim (e.g. `{{ scope.selected_fact_ids[0] }}`) and label the line "Fact Retriever". If another retriever in the "Available facts" table above is more relevant to the user's request, use that retriever's id instead and label the line "Suggested Fact Retriever", since it differs from the user's selection. Pick ONLY from the retrievers listed in that table — never invent one.
+{% else -%}
+- **Suggested Fact Retriever**: no retriever is selected yet, so suggest the `factIds` value (retriever id) from the "Available facts" table above whose facts best match the user's request. Label the line "Suggested Fact Retriever". Pick ONLY from the retrievers listed in that table — never invent one. If none of the listed retrievers' facts are actually relevant to the check being drafted, do not force a pick: write exactly `Suggested Fact Retriever: No relevant fact retriever available.` instead.
+{% endif -%}
+- **Suggested Category**: exactly one of `Security`, `Ownership`, `Documentation`, `Metadata`, `Reliability`, based on what the check is checking.
+- **Suggested Maturity Tier**: exactly one of `Bronze`, `Silver`, `Gold` — judge how foundational vs. advanced the check is (e.g. "resource must have an owner" is Bronze; a nuanced reliability SLO check is Gold).
+
+Category and Maturity Tier are always suggested when any fact retrievers were forwarded, whether or not one is already selected.
+{% endif -%}
 
 ### Response format
 Reply using exactly this structure, matching the check-editor form's own fields, so each piece can be copied straight into the matching field:
@@ -552,13 +609,31 @@ Reply using exactly this structure, matching the check-editor form's own fields,
 Name: <the check name>
 
 Description: <one-sentence description>
+{% if scope.available_fact_retrievers %}
 
+{% if scope.selected_fact_ids %}Fact Retriever: <the selected retriever id, verbatim> — or, if a different retriever from the table above is more relevant: Suggested Fact Retriever: <that retriever's id>{% else %}Suggested Fact Retriever: <retriever id from the table above, or exactly "No relevant fact retriever available." if none of them fit>{% endif %}
+
+
+Suggested Category: <one of Security, Ownership, Documentation, Metadata, Reliability>
+
+Suggested Maturity Tier: <one of Bronze, Silver, Gold>
+
+{% endif -%}
 Rule (json-rules-engine conditions)
 ```json
 {the rule.conditions object only}
 ```
 
-No text before "Name:" and nothing after the closing fence. One `ChatResponse` call; leave `fix_prompt` unset — this flow has no external-agent handoff.
+No text before "Name:" and nothing after the closing fence.{% if scope.available_fact_retrievers %} Include the retriever line ("Fact Retriever" if you're using the user's selected retriever, otherwise "Suggested Fact Retriever") plus "Suggested Category" and "Suggested Maturity Tier", exactly once each, between "Description:" and "Rule (...)" — only because fact retrievers were forwarded with this request.{% endif %} Always restate the full structure above in every reply on this flow, including follow-up turns where the user only asks to tweak or add a condition ("change the value to true", "also check for an owner") — never reply with just the Rule JSON block on its own, even when Name/Description/retriever/category/tier are unchanged from your previous turn. One `ChatResponse` call; leave `fix_prompt` unset — this flow has no external-agent handoff.
+
+{% if scope.available_fact_retrievers -%}
+**BEFORE YOU REPLY — checklist (fact retrievers were forwarded with this request, so all of these are mandatory):**
+- [ ] Does the reply contain a line starting with {% if scope.selected_fact_ids %}`Fact Retriever:` (selected retriever) or `Suggested Fact Retriever:` (a more relevant retriever from the table){% else %}`Suggested Fact Retriever:`{% endif %}?
+- [ ] Does the reply contain a line starting with `Suggested Category:`?
+- [ ] Does the reply contain a line starting with `Suggested Maturity Tier:`?
+
+If any box would be unchecked, your draft reply is INCOMPLETE — add the missing line(s) before calling `ChatResponse`. A reply with only Name/Description/Rule JSON is WRONG whenever fact retrievers were forwarded, with no exceptions.
+{% endif -%}
 
 {% endif -%}
 
